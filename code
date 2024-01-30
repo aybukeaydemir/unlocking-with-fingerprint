@@ -1,0 +1,332 @@
+import time
+import board
+import busio
+import digitalio
+from digitalio import DigitalInOut, Direction, Pull
+import analogio
+from adafruit_motor import stepper
+import adafruit_fingerprint
+from lcd.lcd import LCD
+from lcd.i2c_pcf8574_interface import I2CPCF8574Interface
+
+DELAY = 0.01
+STEPS = 1024
+
+sda, scl = board.GP0, board.GP1
+i2c = busio.I2C(scl, sda)
+lcd = LCD(I2CPCF8574Interface(i2c, 0x27), num_rows=2, num_cols=16)
+lcd.set_cursor_pos(0,1)
+lcd.print("The code is\n running")
+time.sleep(1.5)
+
+photocell = analogio.AnalogIn(board.A0)
+pot = analogio.AnalogIn(board.A1)
+
+btn1 = DigitalInOut(board.GP17)
+btn1.direction = Direction.INPUT
+btn1.pull = Pull.UP
+
+btn2 = DigitalInOut(board.GP16)
+btn2.direction = Direction.INPUT
+btn2.pull = Pull.UP
+
+buzzer = DigitalInOut(board.GP13)
+buzzer.direction = digitalio.Direction.OUTPUT
+
+red = DigitalInOut(board.GP10)
+green = DigitalInOut(board.GP11)
+blue = DigitalInOut(board.GP12)
+led = DigitalInOut(board.GP14)
+
+red.direction = digitalio.Direction.OUTPUT
+green.direction = digitalio.Direction.OUTPUT
+blue.direction = digitalio.Direction.OUTPUT
+led.direction = digitalio.Direction.OUTPUT
+
+red.value = True
+blue.value = True
+green.value = True
+
+
+coils = (
+    digitalio.DigitalInOut(board.GP21),  # A1
+    digitalio.DigitalInOut(board.GP20),  # A2
+    digitalio.DigitalInOut(board.GP19),  # B1
+    digitalio.DigitalInOut(board.GP18),  # B2
+)
+
+for coil in coils:
+    coil.direction = digitalio.Direction.OUTPUT
+
+motor = stepper.StepperMotor(coils[0], coils[1], coils[2], coils[3], microsteps=None)
+
+
+uart = busio.UART(board.GP4, board.GP5, baudrate=57600, timeout=1)
+
+finger = adafruit_fingerprint.Adafruit_Fingerprint(uart)
+
+##################################################
+
+
+def get_fingerprint():
+    """Get a finger print image, template it, and see if it matches!"""
+    print("Waiting for image...")
+    while finger.get_image() != adafruit_fingerprint.OK:
+        pass
+    print("Templating...")
+    if finger.image_2_tz(1) != adafruit_fingerprint.OK:
+        return False
+    print("Searching...")
+    if finger.finger_search() != adafruit_fingerprint.OK:
+        return False
+    return True
+
+def get_fingerprint_detail():
+    """Get a finger print image, template it, and see if it matches!
+    This time, print out each error instead of just returning on failure"""
+    print("Getting image...", end="")
+    i = finger.get_image()
+    if i == adafruit_fingerprint.OK:
+        print("Image taken")
+    else:
+        if i == adafruit_fingerprint.NOFINGER:
+            print("No finger detected")
+        elif i == adafruit_fingerprint.IMAGEFAIL:
+            print("Imaging error")
+        else:
+            print("Other error")
+        return False
+
+    print("Templating...", end="")
+    i = finger.image_2_tz(1)
+    if i == adafruit_fingerprint.OK:
+        print("Templated")
+    else:
+        if i == adafruit_fingerprint.IMAGEMESS:
+            print("Image too messy")
+        elif i == adafruit_fingerprint.FEATUREFAIL:
+            print("Could not identify features")
+        elif i == adafruit_fingerprint.INVALIDIMAGE:
+            print("Image invalid")
+        else:
+            print("Other error")
+        return False
+
+    print("Searching...", end="")
+    i = finger.finger_fast_search()
+    # pylint: disable=no-else-return
+    # This block needs to be refactored when it can be tested.
+    if i == adafruit_fingerprint.OK:
+        print("Found fingerprint!")
+        return True
+    else:
+        if i == adafruit_fingerprint.NOTFOUND:
+            print("No match found")
+        else:
+            print("Other error")
+        return False
+
+def enroll_finger(location):
+    """Take a 2 finger images and template it, then store in 'location'"""
+    for fingerimg in range(1, 3):
+        if fingerimg == 1:
+            print("Place finger on sensor...", end="")
+        else:
+            print("Place same finger again...", end="")
+
+        while True:
+            i = finger.get_image()
+            if i == adafruit_fingerprint.OK:
+                print("Image taken")
+                break
+            if i == adafruit_fingerprint.NOFINGER:
+                print(".", end="")
+            elif i == adafruit_fingerprint.IMAGEFAIL:
+                print("Imaging error")
+                return False
+            else:
+                print("Other error")
+                return False
+
+        print("Templating...", end="")
+        i = finger.image_2_tz(fingerimg)
+        if i == adafruit_fingerprint.OK:
+            print("Templated")
+        else:
+            if i == adafruit_fingerprint.IMAGEMESS:
+                print("Image too messy")
+            elif i == adafruit_fingerprint.FEATUREFAIL:
+                print("Could not identify features")
+            elif i == adafruit_fingerprint.INVALIDIMAGE:
+                print("Image invalid")
+            else:
+                print("Other error")
+            return False
+
+        if fingerimg == 1:
+            print("Remove finger")
+            time.sleep(1)
+            while i != adafruit_fingerprint.NOFINGER:
+                i = finger.get_image()
+
+    print("Creating model...", end="")
+    i = finger.create_model()
+    if i == adafruit_fingerprint.OK:
+        print("Created")
+    else:
+        if i == adafruit_fingerprint.ENROLLMISMATCH:
+            print("Prints did not match")
+        else:
+            print("Other error")
+        return False
+
+    print("Storing model #%d..." % location[0], end="")
+    i = finger.store_model(location[0])
+    if i == adafruit_fingerprint.OK:
+        print("Stored")
+    else:
+        if i == adafruit_fingerprint.BADLOCATION:
+            print("Bad storage location")
+        elif i == adafruit_fingerprint.FLASHERR:
+            print("Flash storage error")
+        else:
+            print("Other error")
+        return False
+
+    return True, location[1]
+##################################################
+def get_num():
+    """Use input() to get a valid number from 1 to 127. Retry till success!"""
+    i = 0
+    while (i > 127) or (i < 1):
+        try:
+            i = int(input("Enter ID # from 1-127: "))
+            name = str(input("Enter ID name : "))
+        except ValueError:
+            pass
+    return i, name
+
+names = []
+a = 0
+while True:   
+    led.value = False
+    
+    red.value = True
+    green.value = True
+    blue.value = True
+    
+    if a == 0:
+        lcd.clear()
+        lcd.print("1) finding mode\n2) open menu")
+        print("press button 1 to open finding mode")
+        print("press button 2 open menu")
+        a = 1
+    
+    btnVal1 = True
+    btnVal2 = True
+    if btn1.value== False:
+        btnVal1 = False 
+    if btn2.value == False:
+        btnVal2 = False
+    
+    if btnVal1 == False:
+        lcd.clear()   
+        lcd.print("show your \nfinger")
+        
+        btnVal1 = True
+        a = 0
+        
+        if get_fingerprint():
+            print("Detected #", finger.finger_id, "with confidence", finger.confidence)
+            lcd.clear()
+            s = "WELCOME\n" +  names[finger.finger_id - 1]
+            lcd.print(s)
+            red.value = True
+            green.value = False
+            blue.value = True
+            led.value = True
+            for i in range (STEPS):
+                motor.onestep()
+                if i == 400:
+                    lcd.clear()
+                    lcd.print(" The lock is\n opening")
+                delay = (pot.value -700 ) / (65535- 900) /4
+                time.sleep(delay)
+            led.value = False
+            lcd.clear()
+            lcd.print(" The lock is\n opened")
+            a = True   
+            while a == True:
+                if photocell.value < 35000:
+                    led.value = True
+                    for i in range(STEPS):
+                        if i == 10:
+                            lcd.clear()
+                            lcd.print(" The lock is\n closing")
+                        motor.onestep(direction=stepper.BACKWARD)
+                        delay = (pot.value -700 ) / (65535- 900) /4
+                        time.sleep(delay)
+                    led.value = False
+                    a = False
+                else:
+                    pass
+            lcd.clear()
+            red.value = True
+            green.value = True
+            blue.value = True
+        else:
+            print("Finger not found")
+            lcd.clear()
+            lcd.print(" Finger\n not found")
+            red.value = False
+            green.value = True
+            blue.value = True
+            buzzer.value = True
+            time.sleep(2.5)
+            lcd.clear()
+            red.value = True
+            green.value = True
+            blue.value = True
+            buzzer.value = False
+
+        
+    while btnVal2 == False:
+        print("----------------")
+        if finger.read_templates() != adafruit_fingerprint.OK:
+            raise RuntimeError("Failed to read templates")
+        lcd.clear()
+        lcd.print("e) enroll print\nd) delete print")
+        print("Fingerprint templates:", finger.templates)
+        print("e) enroll print")
+        print("d) delete print")
+        print("q) quit")
+        print("----------------")
+        c = input("> ")
+
+        if c == "e":
+            lcd.clear()
+            lcd.print(" Enrolling \n mode is on")
+            red.value = True
+            green.value = True
+            blue.value = False  
+            id = enroll_finger(get_num())
+            names.append(id[1])
+            print("names : ",names)
+            lcd.clear()
+            lcd.print(" Fingerprint \n  is saved")
+            red.value = True
+            green.value = True
+            blue.value = True
+
+        if c == "d":
+            lcd.clear()
+            lcd.print(" Deleting \n mode is on")
+            if finger.delete_model(get_num()[0]) == adafruit_fingerprint.OK:
+                print("Deleted!")
+            else:
+                print("Failed to delete")
+        if c == "q":
+            btn2Val = True
+            a= 0
+            print("quit")
+            break
